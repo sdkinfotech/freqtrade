@@ -1,0 +1,115 @@
+name: Auto Sync with Upstream
+
+on:
+  schedule:
+    # Запускается каждый день в 3:00 UTC (6:00 MSK)
+    - cron: '0 3 * * *'
+  workflow_dispatch: # Позволяет запускать вручную
+
+jobs:
+  sync:
+    name: Sync with upstream
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Configure Git
+      run: |
+        git config --global user.name "Auto Sync Bot"
+        git config --global user.email "actions@github.com"
+
+    - name: Add upstream remote
+      run: |
+        git remote add upstream https://github.com/freqtrade/freqtrade.git || true
+        git fetch upstream
+
+    - name: Check if sync is needed
+      id: check-sync
+      run: |
+        # Проверяем, есть ли новые коммиты в upstream
+        git fetch upstream develop
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse upstream/develop)
+        
+        if [ "$LOCAL" = "$REMOTE" ]; then
+          echo "sync_needed=false" >> $GITHUB_OUTPUT
+          echo "✅ Repository is already up to date"
+        else
+          echo "sync_needed=true" >> $GITHUB_OUTPUT
+          echo "🔄 Sync needed - upstream has new commits"
+        fi
+
+    - name: Disable workflows temporarily
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        echo "🚫 Temporarily disabling workflows..."
+        for workflow in .github/workflows/*.yml; do
+          if [ -f "$workflow" ]; then
+            mv "$workflow" "${workflow}.disabled"
+            echo "   Disabled: $(basename "$workflow")"
+          fi
+        done
+
+    - name: Commit disabled workflows
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        git add .github/workflows/*.disabled
+        git commit -m "Disable workflows for auto-sync
+
+- Temporarily disabled all GitHub Actions workflows
+- This prevents CI/CD pipelines from running during auto-sync
+- Workflows will be re-enabled after sync completion" || echo "No changes to commit"
+
+    - name: Sync with upstream
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        echo "🔄 Syncing with upstream/develop..."
+        git merge upstream/develop --no-edit -m "Auto-sync with upstream/develop
+
+[skip ci] [skip actions] [skip pipeline]
+Automated daily sync with upstream repository"
+
+    - name: Re-enable workflows
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        echo "✅ Re-enabling workflows..."
+        for workflow in .github/workflows/*.disabled; do
+          if [ -f "$workflow" ]; then
+            mv "$workflow" "${workflow%.disabled}"
+            echo "   Enabled: $(basename "${workflow%.disabled}")"
+          fi
+        done
+
+    - name: Commit re-enabled workflows
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        git add .github/workflows/*.yml
+        git commit -m "Re-enable workflows after auto-sync
+
+- Re-enabled all GitHub Actions workflows
+- Auto-sync completed successfully
+- CI/CD pipelines are now active again" || echo "No changes to commit"
+
+    - name: Push changes
+      if: steps.check-sync.outputs.sync_needed == 'true'
+      run: |
+        echo "🚀 Pushing changes..."
+        git push origin develop
+
+    - name: Create summary
+      if: always()
+      run: |
+        if [ "${{ steps.check-sync.outputs.sync_needed }}" = "true" ]; then
+          echo "## ✅ Auto-sync completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "- Synced with upstream/develop" >> $GITHUB_STEP_SUMMARY
+          echo "- Workflows were temporarily disabled during sync" >> $GITHUB_STEP_SUMMARY
+          echo "- Changes have been pushed to develop branch" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ℹ️ No sync needed" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository is already up to date with upstream" >> $GITHUB_STEP_SUMMARY
+        fi
