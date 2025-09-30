@@ -26,12 +26,13 @@ jobs:
   docker-build:
     name: 🐳 Build Docker Images
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: 📥 Checkout
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-depth: 1
         persist-credentials: false
 
     - name: 🔧 Setup Docker Buildx
@@ -61,16 +62,17 @@ jobs:
         # Версия из кода
         CODE_VERSION=$(python -c "from freqtrade import __version__; print(__version__)")
         
-        # Коммит
-        COMMIT_SHA=$(git rev-parse --short HEAD)
+        # Короткий коммит из GitHub context
+        COMMIT_SHA="${{ github.sha }}"
+        COMMIT_SHA_SHORT=${COMMIT_SHA:0:7}
         
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "code_version=$CODE_VERSION" >> $GITHUB_OUTPUT
-        echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+        echo "commit_sha=$COMMIT_SHA_SHORT" >> $GITHUB_OUTPUT
         
         echo "🏷️ Version: $VERSION"
         echo "📦 Code Version: $CODE_VERSION"
-        echo "🔗 Commit: $COMMIT_SHA"
+        echo "🔗 Commit: $COMMIT_SHA_SHORT"
 
     - name: 🐳 Build Base Image
       uses: docker/build-push-action@v5
