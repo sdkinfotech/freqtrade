@@ -6,7 +6,7 @@ on:
       - stable
       - develop
     tags:
-      - '20*'  # Запускается при создании тегов версий (2025.5, 2025.6, etc.)
+      - '*'  # Запускается при создании любых тегов
   workflow_dispatch:
     inputs:
       version:
