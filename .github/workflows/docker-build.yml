@@ -13,14 +13,20 @@ on:
         description: 'Custom version tag'
         required: false
         default: 'latest'
+        type: string
       branch:
         description: 'Branch to build from'
         required: false
         default: 'develop'
+        type: string
 
 env:
   REGISTRY: docker.io
   IMAGE_NAME: sdkinfo999/freqtrade
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push:
@@ -32,6 +38,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -45,27 +52,40 @@ jobs:
 
     - name: Extract version information
       id: version
+      env:
+        INPUT_VERSION: ${{ github.event.inputs.version }}
+        INPUT_BRANCH: ${{ github.event.inputs.branch }}
       run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          # Ручной запуск
-          VERSION="${{ github.event.inputs.version }}"
-          BRANCH="${{ github.event.inputs.branch }}"
-        elif [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
-          # Тег релиза
-          VERSION="${{ github.ref_name }}"
+        # Безопасное извлечение версии без template injection
+        EVENT_NAME="${{ github.event_name }}"
+        GITHUB_REF="${{ github.ref }}"
+        
+        if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          # Ручной запуск - используем безопасные значения по умолчанию
+          VERSION="${INPUT_VERSION:-latest}"
+          BRANCH="${INPUT_BRANCH:-develop}"
+        elif [ "$EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+          # Тег релиза - извлекаем безопасно
+          VERSION=$(echo "$GITHUB_REF" | sed 's|refs/tags/||')
           BRANCH="stable"
-        elif [ "${{ github.ref }}" = "refs/heads/stable" ]; then
+        elif [ "$GITHUB_REF" = "refs/heads/stable" ]; then
           # Стабильная ветка
           VERSION="stable"
           BRANCH="stable"
-        elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+        elif [ "$GITHUB_REF" = "refs/heads/develop" ]; then
           # Develop ветка
           VERSION="develop"
           BRANCH="develop"
         else
           # Другие ветки
           VERSION="latest"
-          BRANCH="${{ github.ref_name }}"
+          BRANCH=$(echo "$GITHUB_REF" | sed 's|refs/heads/||')
+        fi
+        
+        # Валидация версии для безопасности
+        if ! echo "$VERSION" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+          echo "Invalid version format: $VERSION"
+          exit 1
         fi
         
         # Получаем версию из кода
