@@ -1,0 +1,148 @@
+name: 🐳 Docker Build
+
+on:
+  push:
+    branches:
+      - stable
+      - develop
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (optional)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: sdkinfo999/freqtrade
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker-build:
+    name: 🐳 Build Docker Images
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: 🔧 Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: 🔐 Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: 📋 Get Version Info
+      id: version
+      run: |
+        # Простое и безопасное получение версии
+        if [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
+          VERSION=$(echo "${{ github.ref }}" | sed 's|refs/tags/||')
+        elif [ "${{ github.ref }}" = "refs/heads/stable" ]; then
+          VERSION="stable"
+        elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+          VERSION="develop"
+        else
+          VERSION="latest"
+        fi
+        
+        # Версия из кода
+        CODE_VERSION=$(python -c "from freqtrade import __version__; print(__version__)")
+        
+        # Коммит
+        COMMIT_SHA=$(git rev-parse --short HEAD)
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "code_version=$CODE_VERSION" >> $GITHUB_OUTPUT
+        echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+        
+        echo "🏷️ Version: $VERSION"
+        echo "📦 Code Version: $CODE_VERSION"
+        echo "🔗 Commit: $COMMIT_SHA"
+
+    - name: 🐳 Build Base Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.code_version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.commit_sha }}
+        labels: |
+          org.opencontainers.image.title=Freqtrade Trading Bot
+          org.opencontainers.image.description=Free and open source crypto trading bot
+          org.opencontainers.image.url=https://github.com/sdkinfotech/freqtrade
+          org.opencontainers.image.source=https://github.com/sdkinfotech/freqtrade
+          org.opencontainers.image.version=${{ steps.version.outputs.code_version }}
+          org.opencontainers.image.revision=${{ steps.version.outputs.commit_sha }}
+          org.opencontainers.image.vendor=sdkinfotech
+
+    - name: 🐳 Build FreqAI Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./docker/Dockerfile.freqai
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai:${{ steps.version.outputs.version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai:${{ steps.version.outputs.code_version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai:${{ steps.version.outputs.commit_sha }}
+
+    - name: 🐳 Build FreqAI RL Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./docker/Dockerfile.freqai_rl
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai-rl:${{ steps.version.outputs.version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai-rl:${{ steps.version.outputs.code_version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-freqai-rl:${{ steps.version.outputs.commit_sha }}
+
+    - name: 🐳 Build Plot Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./docker/Dockerfile.plot
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-plot:${{ steps.version.outputs.version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-plot:${{ steps.version.outputs.code_version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-plot:${{ steps.version.outputs.commit_sha }}
+
+    - name: ✅ Success Summary
+      if: always()
+      run: |
+        echo "## 🎉 Docker Images Built Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Version Information:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tag:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Code Version:** \`${{ steps.version.outputs.code_version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit:** \`${{ steps.version.outputs.commit_sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🐳 Available Images:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Base:** \`sdkinfo999/freqtrade\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **FreqAI:** \`sdkinfo999/freqtrade-freqai\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **FreqAI RL:** \`sdkinfo999/freqtrade-freqai-rl\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Plot:** \`sdkinfo999/freqtrade-plot\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔗 Docker Hub:" >> $GITHUB_STEP_SUMMARY
+        echo "https://hub.docker.com/repositories/sdkinfo999" >> $GITHUB_STEP_SUMMARY
