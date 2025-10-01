@@ -204,9 +204,15 @@ jobs:
         sed -i "s/version: .*/version: ${{ steps.version.outputs.version }}/" charts/freqtrade/Chart.yaml
         sed -i "s/appVersion: .*/appVersion: \"${{ steps.version.outputs.version }}\"/" charts/freqtrade/Chart.yaml
         
-        # Обновляем values.yaml
-        sed -i "s|tag: .*|tag: \"${{ steps.version.outputs.version }}\"|" charts/freqtrade/values.yaml
-        sed -i "s|repository: .*|repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade|" charts/freqtrade/values.yaml
+        # Обновляем только нужные поля в values.yaml
+        if [ -f "charts/freqtrade/values.yaml" ]; then
+          # Обновляем только image repository и tag
+          sed -i "s|repository: .*|repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade|" charts/freqtrade/values.yaml
+          sed -i "s|tag: .*|tag: \"${{ steps.version.outputs.version }}\"|" charts/freqtrade/values.yaml
+          echo "📝 Updated existing values.yaml"
+        else
+          echo "⚠️ values.yaml not found, creating new one"
+        fi
         
         echo "📝 Updated Helm chart files"
     

@@ -74,8 +74,16 @@ jobs:
             email: team@yourcompany.com
         EOF
         
-        # Обновляем values.yaml
-        cat > charts/freqtrade/values.yaml << EOF
+        # Обновляем только нужные поля в values.yaml
+        if [ -f "charts/freqtrade/values.yaml" ]; then
+          # Обновляем только image repository и tag
+          sed -i "s|repository: .*|repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade|" charts/freqtrade/values.yaml
+          sed -i "s|tag: .*|tag: \"${{ steps.version.outputs.version }}\"|" charts/freqtrade/values.yaml
+          echo "📝 Updated existing values.yaml"
+        else
+          # Создаем новый values.yaml если файл не существует
+          cat > charts/freqtrade/values.yaml << EOF
+        # Default values for freqtrade
         image:
           repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade
           tag: "${{ steps.version.outputs.version }}"
@@ -91,21 +99,59 @@ jobs:
             cpu: 500m
             memory: 1Gi
         
+        # Freqtrade configuration
         config:
           max_open_trades: 3
           stake_currency: USDT
           stake_amount: 100
           dry_run: true
+          
           exchange:
             name: binance
             sandbox: true
+          
           strategy: SampleStrategy
+          
           api_server:
             enabled: true
             listen_port: 8080
             username: admin
             password: admin123
+        
+        # Service configuration
+        service:
+          type: ClusterIP
+          port: 8080
+        
+        # Ingress configuration
+        ingress:
+          enabled: false
+          className: ""
+          annotations: {}
+          hosts:
+            - host: freqtrade.local
+              paths:
+                - path: /
+                  pathType: Prefix
+          tls: []
+        
+        # Persistence
+        persistence:
+          enabled: true
+          storageClass: ""
+          accessMode: ReadWriteOnce
+          size: 10Gi
+        
+        # Monitoring
+        monitoring:
+          enabled: true
+          prometheus:
+            enabled: true
+          grafana:
+            enabled: true
         EOF
+          echo "📝 Created new values.yaml"
+        fi
         
         echo "📝 Updated Helm chart files"
     
