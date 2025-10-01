@@ -1,0 +1,94 @@
+name: 🔄 Scheduled Check for Updates
+
+on:
+  # Запуск по расписанию каждый день в 9:00 UTC
+  schedule:
+    - cron: '0 9 * * *'
+
+jobs:
+  check-updates:
+    name: 🔍 Check for New Freqtrade Version
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Check Latest Release
+      run: |
+        echo "🔍 Checking for new freqtrade releases..."
+        
+        # Получаем последний релиз
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/freqtrade/freqtrade/releases/latest | jq -r '.tag_name')
+        echo "Latest freqtrade version: $LATEST_VERSION"
+        
+        # Проверяем текущую версию (если есть файл .version)
+        if [ -f ".version" ]; then
+          CURRENT_VERSION=$(cat .version)
+          echo "Current version: $CURRENT_VERSION"
+          
+          if [ "$LATEST_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "🆕 New version found: $LATEST_VERSION"
+            echo "has_update=true" >> $GITHUB_ENV
+            echo "new_version=$LATEST_VERSION" >> $GITHUB_ENV
+          else
+            echo "✅ Already up to date"
+            echo "has_update=false" >> $GITHUB_ENV
+          fi
+        else
+          echo "📝 No version file found, treating as new version"
+          echo "has_update=true" >> $GITHUB_ENV
+          echo "new_version=$LATEST_VERSION" >> $GITHUB_ENV
+        fi
+    
+    - name: 📝 Create Issue if Update Available
+      if: env.has_update == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const version = process.env.new_version;
+          const issueTitle = `🚀 New Freqtrade Version Available: ${version}`;
+          const issueBody = `
+          ## 🆕 New Freqtrade Version Detected
+          
+          **Version:** \`${version}\`
+          **Detected:** ${new Date().toISOString()}
+          
+          ### Next Steps:
+          - [ ] Build new Docker image
+          - [ ] Update Helm chart
+          - [ ] Deploy to Kubernetes
+          
+          ### Manual Actions:
+          1. Run the Docker build workflow
+          2. Update the Helm chart repository
+          3. Trigger ArgoCD sync
+          
+          ---
+          *This issue was automatically created by the update checker.*
+          `;
+          
+          // Проверяем, есть ли уже открытый issue с этой версией
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: 'update-available'
+          });
+          
+          const existingIssue = issues.data.find(issue => 
+            issue.title.includes(version)
+          );
+          
+          if (!existingIssue) {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: issueBody,
+              labels: ['update-available', 'automated']
+            });
+            console.log(`✅ Created issue for version ${version}`);
+          } else {
+            console.log(`ℹ️ Issue already exists for version ${version}`);
+          }

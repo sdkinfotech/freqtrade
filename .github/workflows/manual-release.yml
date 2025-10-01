@@ -1,0 +1,276 @@
+name: 🚀 Manual Release Pipeline
+
+on:
+  # Ручной запуск с параметрами
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do?'
+        required: true
+        default: 'check'
+        type: choice
+        options:
+          - check
+          - build
+          - deploy
+          - full-release
+      version:
+        description: 'Specific version (optional, leave empty for latest)'
+        required: false
+        type: string
+      force:
+        description: 'Force update even if version exists'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  check-version:
+    name: 🔍 Check Version
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'check' ||
+      github.event.inputs.action == 'full-release'
+    outputs:
+      latest-version: ${{ steps.check.outputs.latest-version }}
+      current-version: ${{ steps.check.outputs.current-version }}
+      has-update: ${{ steps.check.outputs.has-update }}
+      target-version: ${{ steps.check.outputs.target-version }}
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Check Versions
+      id: check
+      run: |
+        echo "🔍 Checking freqtrade versions..."
+        
+        # Получаем последний релиз
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/freqtrade/freqtrade/releases/latest | jq -r '.tag_name')
+        echo "Latest freqtrade version: $LATEST_VERSION"
+        
+        # Определяем целевую версию
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          TARGET_VERSION="${{ github.event.inputs.version }}"
+          echo "Using specified version: $TARGET_VERSION"
+        else
+          TARGET_VERSION="$LATEST_VERSION"
+          echo "Using latest version: $TARGET_VERSION"
+        fi
+        
+        # Проверяем текущую версию
+        CURRENT_VERSION="unknown"
+        if [ -f ".version" ]; then
+          CURRENT_VERSION=$(cat .version)
+          echo "Current version: $CURRENT_VERSION"
+        else
+          echo "No version file found"
+        fi
+        
+        # Проверяем, нужен ли апдейт
+        HAS_UPDATE="false"
+        if [ "$TARGET_VERSION" != "$CURRENT_VERSION" ] || [ "${{ github.event.inputs.force }}" == "true" ]; then
+          HAS_UPDATE="true"
+          echo "🆕 Update needed: $CURRENT_VERSION → $TARGET_VERSION"
+        else
+          echo "✅ Already up to date"
+        fi
+        
+        # Выводим результаты
+        echo "latest-version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+        echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "target-version=$TARGET_VERSION" >> $GITHUB_OUTPUT
+        echo "has-update=$HAS_UPDATE" >> $GITHUB_OUTPUT
+        
+        # Создаем summary
+        echo "## 🔍 Version Check Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Latest Version | \`$LATEST_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Current Version | \`$CURRENT_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Target Version | \`$TARGET_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Update Needed | $HAS_UPDATE |" >> $GITHUB_STEP_SUMMARY
+        echo "| Force Update | ${{ github.event.inputs.force }} |" >> $GITHUB_STEP_SUMMARY
+
+  build-image:
+    name: 🐳 Build Docker Image
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: |
+      (needs.check-version.outputs.has-update == 'true' && 
+       (github.event.inputs.action == 'build' || github.event.inputs.action == 'full-release')) ||
+      github.event.inputs.action == 'build'
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Get Target Version
+      id: version
+      run: |
+        if [ -n "${{ needs.check-version.outputs.target-version }}" ]; then
+          VERSION="${{ needs.check-version.outputs.target-version }}"
+        elif [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION=$(curl -s https://api.github.com/repos/freqtrade/freqtrade/releases/latest | jq -r '.tag_name')
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "🔍 Building version: $VERSION"
+    
+    - name: 🔧 Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 🔐 Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: 🐳 Build and Push Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/freqtrade:${{ steps.version.outputs.version }}
+          ${{ secrets.DOCKER_USERNAME }}/freqtrade:stable
+        labels: |
+          version=${{ steps.version.outputs.version }}
+          build-date=${{ github.run_number }}
+          source=manual-pipeline
+    
+    - name: 📝 Update Version File
+      run: |
+        echo "${{ steps.version.outputs.version }}" > .version
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add .version
+        git commit -m "📝 Update version to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+        git push || echo "Nothing to push"
+    
+    - name: ✅ Build Summary
+      run: |
+        echo "## 🐳 Docker Image Built Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Image:** \`${{ secrets.DOCKER_USERNAME }}/freqtrade:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Build:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+  deploy-helm:
+    name: 📦 Deploy Helm Chart
+    runs-on: ubuntu-latest
+    needs: [check-version, build-image]
+    if: |
+      (needs.check-version.outputs.has-update == 'true' && 
+       (github.event.inputs.action == 'deploy' || github.event.inputs.action == 'full-release')) ||
+      github.event.inputs.action == 'deploy'
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Get Target Version
+      id: version
+      run: |
+        if [ -n "${{ needs.check-version.outputs.target-version }}" ]; then
+          VERSION="${{ needs.check-version.outputs.target-version }}"
+        elif [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION=$(git log -1 --pretty=format:"%s" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "🔍 Deploying version: $VERSION"
+    
+    - name: 📥 Checkout Helm Charts Repository
+      uses: actions/checkout@v4
+      with:
+        repository: sdkinfotech/cd_freqtrade
+        token: ${{ secrets.GITHUB_TOKEN }}
+        path: helm-charts
+    
+    - name: 🔄 Update Chart Version
+      run: |
+        cd helm-charts
+        
+        # Обновляем Chart.yaml
+        sed -i "s/version: .*/version: ${{ steps.version.outputs.version }}/" charts/freqtrade/Chart.yaml
+        sed -i "s/appVersion: .*/appVersion: \"${{ steps.version.outputs.version }}\"/" charts/freqtrade/Chart.yaml
+        
+        # Обновляем values.yaml
+        sed -i "s|tag: .*|tag: \"${{ steps.version.outputs.version }}\"|" charts/freqtrade/values.yaml
+        sed -i "s|repository: .*|repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade|" charts/freqtrade/values.yaml
+        
+        echo "📝 Updated Helm chart files"
+    
+    - name: 📝 Commit Changes
+      run: |
+        cd helm-charts
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add charts/freqtrade/
+        git commit -m "🚀 Update freqtrade to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+        git push || echo "Nothing to push"
+    
+    - name: 🔔 Notify ArgoCD
+      run: |
+        if [ -n "${{ secrets.ARGOCD_WEBHOOK_URL }}" ]; then
+          echo "🔔 Notifying ArgoCD about update..."
+          curl -X POST "${{ secrets.ARGOCD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"version": "${{ steps.version.outputs.version }}", "image": "${{ secrets.DOCKER_USERNAME }}/freqtrade:${{ steps.version.outputs.version }}"}' \
+            || echo "⚠️ Failed to notify ArgoCD"
+        else
+          echo "ℹ️ ArgoCD webhook URL not configured, skipping notification"
+        fi
+    
+    - name: ✅ Deploy Summary
+      run: |
+        echo "## 📦 Helm Chart Updated Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Image:** \`${{ secrets.DOCKER_USERNAME }}/freqtrade:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Helm Chart:** Updated in [cd_freqtrade](https://github.com/sdkinfotech/cd_freqtrade)" >> $GITHUB_STEP_SUMMARY
+        echo "**ArgoCD:** $([ -n "${{ secrets.ARGOCD_WEBHOOK_URL }}" ] && echo "Notified" || echo "Not configured")" >> $GITHUB_STEP_SUMMARY
+
+  final-summary:
+    name: 📋 Final Summary
+    runs-on: ubuntu-latest
+    needs: [check-version, build-image, deploy-helm]
+    if: always()
+    
+    steps:
+    - name: 📋 Create Final Summary
+      run: |
+        echo "## 🎉 Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Action:** \`${{ github.event.inputs.action }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Target Version:** \`${{ needs.check-version.outputs.target-version || github.event.inputs.version || 'latest' }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Force Update:** ${{ github.event.inputs.force }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Job Results:" >> $GITHUB_STEP_SUMMARY
+        echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Check Version | ${{ needs.check-version.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Build Image | ${{ needs.build-image.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Deploy Helm | ${{ needs.deploy-helm.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ needs.deploy-helm.result }}" == "success" ]; then
+          echo "- ✅ Helm chart updated" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 ArgoCD should sync automatically" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Monitor deployment in Kubernetes" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ needs.build-image.result }}" == "success" ]; then
+          echo "- ✅ Docker image built" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Run 'deploy' action to update Helm chart" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ needs.check-version.result }}" == "success" ]; then
+          echo "- ✅ Version checked" >> $GITHUB_STEP_SUMMARY
+          echo "- 🐳 Run 'build' action to build Docker image" >> $GITHUB_STEP_SUMMARY
+        fi

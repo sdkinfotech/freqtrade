@@ -1,0 +1,131 @@
+name: 📦 Update Helm Chart
+
+on:
+  # Запуск при успешной сборке образа
+  workflow_run:
+    workflows: ["🐳 Build Docker Image"]
+    types: [completed]
+    branches: [main]
+  
+  # Ручной запуск
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to update (optional)'
+        required: false
+        type: string
+
+jobs:
+  update-helm:
+    name: 📦 Update Helm Chart
+    runs-on: ubuntu-latest
+    if: |
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Get Version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          # Получаем версию из последнего коммита
+          VERSION=$(git log -1 --pretty=format:"%s" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+        fi
+        
+        if [ -z "$VERSION" ]; then
+          echo "❌ Could not determine version"
+          exit 1
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "🔍 Updating Helm chart to version: $VERSION"
+    
+    - name: 📥 Checkout Helm Charts Repository
+      uses: actions/checkout@v4
+      with:
+        repository: sdkinfotech/cd_freqtrade  # Замените на ваш репозиторий
+        token: ${{ secrets.GITHUB_TOKEN }}
+        path: helm-charts
+    
+    - name: 🔄 Update Chart Version
+      run: |
+        cd helm-charts
+        
+        # Создаем директорию если не существует
+        mkdir -p charts/freqtrade
+        
+        # Обновляем Chart.yaml
+        cat > charts/freqtrade/Chart.yaml << EOF
+        apiVersion: v2
+        name: freqtrade
+        description: Freqtrade Trading Bot
+        version: ${{ steps.version.outputs.version }}
+        appVersion: "${{ steps.version.outputs.version }}"
+        home: https://github.com/freqtrade/freqtrade
+        sources:
+          - https://github.com/freqtrade/freqtrade
+        maintainers:
+          - name: Your Team
+            email: team@yourcompany.com
+        EOF
+        
+        # Обновляем values.yaml
+        cat > charts/freqtrade/values.yaml << EOF
+        image:
+          repository: ${{ secrets.DOCKER_USERNAME }}/freqtrade
+          tag: "${{ steps.version.outputs.version }}"
+          pullPolicy: IfNotPresent
+        
+        replicaCount: 1
+        
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        
+        config:
+          max_open_trades: 3
+          stake_currency: USDT
+          stake_amount: 100
+          dry_run: true
+          exchange:
+            name: binance
+            sandbox: true
+          strategy: SampleStrategy
+          api_server:
+            enabled: true
+            listen_port: 8080
+            username: admin
+            password: admin123
+        EOF
+        
+        echo "📝 Updated Helm chart files"
+    
+    - name: 📝 Commit Changes
+      run: |
+        cd helm-charts
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add charts/freqtrade/
+        git commit -m "🚀 Update freqtrade to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+        git push || echo "Nothing to push"
+    
+    - name: 🔔 Notify ArgoCD (Optional)
+      run: |
+        if [ -n "${{ secrets.ARGOCD_WEBHOOK_URL }}" ]; then
+          echo "🔔 Notifying ArgoCD about update..."
+          curl -X POST "${{ secrets.ARGOCD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"version": "${{ steps.version.outputs.version }}", "image": "${{ secrets.DOCKER_USERNAME }}/freqtrade:${{ steps.version.outputs.version }}"}' \
+            || echo "⚠️ Failed to notify ArgoCD"
+        else
+          echo "ℹ️ ArgoCD webhook URL not configured, skipping notification"
+        fi
